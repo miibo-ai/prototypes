@@ -203,7 +203,7 @@ class MiiboAvatar {
     }
 
     ask(message) {
-        console.log(Recognize: message)
+        console.log("Recognize:",message)
         this.getMiiboResponse(message);
     }
 
@@ -261,7 +261,7 @@ class MiiboAvatar {
     }
 
     async startTalk(input) {
-        console.log("talk",input)
+        console.log("AI Response:",input)
         if (this.peerConnection?.signalingState === 'stable' || this.peerConnection?.iceConnectionState === 'connected') {
 
             const gender = this.didOptions.presenter.gender;
