@@ -2,7 +2,7 @@
 class MiiboAvatar {
     constructor(config) {
         this.container = config.container;
-        this.speechToTextOptions = config.option.speech_to_text; 
+        this.speechToTextOptions = config.option.speech_to_text;
         this.miiboOptions = config.option.miibo;
         this.didOptions = config.option.d_id;
         this.initialize();
@@ -17,7 +17,10 @@ class MiiboAvatar {
 
         this.createNewStream();
         this.rec = new webkitSpeechRecognition()
+        this.transcripts = "";
 
+        this.sentences = [];
+        this.speech_cnt = 0;
         this.speaching = false;
         this.processing = false;
         this.streams = [];
@@ -27,7 +30,7 @@ class MiiboAvatar {
         try {
             this.stopAllStreams();
             this.closePC();
-    
+
             let presenter = {"source_url": this.didOptions.presenter.image_url}
             const sessionResponse = await this.fetchWithRetries(`https://api.d-id.com/${this.didOptions.service}/streams`, {
                 method: 'POST',
@@ -37,11 +40,11 @@ class MiiboAvatar {
                 },
                 body: JSON.stringify(presenter),
             });
-    
+
             const { id: newStreamId, offer, ice_servers: iceServers, session_id: newSessionId } = await sessionResponse.json();
             this.streamId = newStreamId;
             this.sessionId = newSessionId;
-    
+
             try {
                 this.sessionClientAnswer = await this.createPeerConnection(offer, iceServers);
             } catch (e) {
@@ -50,7 +53,7 @@ class MiiboAvatar {
                 this.closePC();
                 return;
             }
-    
+
             const sdpResponse = await fetch(`https://api.d-id.com/${this.didOptions.service}/streams/${this.streamId}/sdp`, {
                 method: 'POST',
                 headers: {
@@ -62,7 +65,7 @@ class MiiboAvatar {
                     session_id: this.sessionId,
                 }),
             });
-    
+
             // Handle sdpResponse if needed
         } catch (error) {
             console.log('Error creating new stream:', error);
@@ -70,7 +73,7 @@ class MiiboAvatar {
         }
     }
 
-    speechRecogInit() {
+    GoogleSpeechRecogInit() {
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)()
 
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -82,16 +85,43 @@ class MiiboAvatar {
         }
     }
 
-
     startRecording() {
-        this.recorder && this.recorder.record();
+        if (this.audioContext) {
+            this.recorder && this.recorder.record();
+        } else {
+            this.rec.continuous = false;
+            this.rec.interimResults = false;
+            this.rec.lang = 'ja-JP';
+
+            this.rec.onresult = (e) => {
+                for (var i = e.resultIndex; i < e.results.length; i++) {
+                    if (!e.results[i].isFinal) continue;
+
+                    const { transcript } = e.results[i][0];
+                    this.transcripts += transcript;
+                }
+            };
+            this.rec.onend = () => {
+                if (!this.processing) this.rec.start();
+            }
+            this.rec.start();
+        }
     }
-    
+
     stopRecording() {
-        this.playLoadingVideo();
-        this.recorder && this.recorder.stop();
-        this.audioRecognize();
-        this.recorder.clear();
+        if (this.audioContext) {
+            this.playLoadingVideo();
+            this.recorder && this.recorder.stop();
+            this.audioRecognize();
+            this.recorder.clear();
+        } else {
+            this.rec.stop();
+            this.processing = true;
+            this.playLoadingVideo();
+
+            this.ask(this.transcripts);
+            this.transcripts = "";
+        }
     }
 
     audioRecognize() {
@@ -135,21 +165,21 @@ class MiiboAvatar {
         this.rec.continuous = false
         this.rec.interimResults = false
         this.rec.lang = 'ja-JP'
-        
+
         this.rec.onresult = (e) => {
             this.processing = true
             this.playLoadingVideo();
 
             this.rec.stop()
-        
+
             for (var i = e.resultIndex; i < e.results.length; i++) {
                 if (!e.results[i].isFinal) continue
-        
+
                 const { transcript } = e.results[i][0]
                 this.ask(transcript);
             }
         }
-        
+
         this.rec.onend = () => { this.autoRecognizeRestart() }
         this.rec.start()
     }
@@ -173,6 +203,7 @@ class MiiboAvatar {
     }
 
     ask(message) {
+        console.log(Recognize: message)
         this.getMiiboResponse(message);
     }
 
@@ -182,16 +213,16 @@ class MiiboAvatar {
             agent_id: this.miiboOptions.agent_id,
             uid: this.miiboOptions.user_id,
             stream: true,
-            utterance: utterance 
+            utterance: utterance
         };
-    
+
         try {
             const res = await fetch("https://api-mebo.dev/api", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(params),
             });
-    
+
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let output = "";
@@ -201,24 +232,25 @@ class MiiboAvatar {
             const read = async () => {
                 const { done, value } = await reader.read();
                 if (done) return;
-    
+
                 let dataString = decoder.decode(value).split("\n").filter(x => x != "");
-    
+
                 try {
                     let responseData = JSON.parse(dataString[dataString.length - 1]);
-                    
+
                     output = responseData.bestResponse.utterance.split("\n").filter(x => x.trim() != "").join("\n");
-                    sentences = output.replace(/[。、\.\,\!\?！？]/,".").split(".")
+                    sentences = output.replaceAll(/[。\.\!\?！？]/g,".").split(".")
                     if (this.didOptions.priority == "speed" && current_index == 0 && current_index + 1 < sentences.length) {
-                        this.startTalk(sentences[current_index++])
+                        this.startTalk(sentences[current_index++]);
+                        this.speech_cnt++;
                     }
                 } catch(e) {
                     console.log(e);
                 }
-    
+
                 return read();
             };
-    
+
             await read();
             reader.releaseLock();
 
@@ -229,6 +261,7 @@ class MiiboAvatar {
     }
 
     async startTalk(input) {
+        console.log("talk",input)
         if (this.peerConnection?.signalingState === 'stable' || this.peerConnection?.iceConnectionState === 'connected') {
 
             const gender = this.didOptions.presenter.gender;
@@ -262,7 +295,7 @@ class MiiboAvatar {
                         subtitles: false,
                         provider: {
                             type: "microsoft",
-                            voice_id: voice_id 
+                            voice_id: voice_id
                         },
                         ssml: false,
                         input: input
@@ -304,7 +337,7 @@ class MiiboAvatar {
                 },
                 body: JSON.stringify({ session_id: this.sessionId }),
             });
-    
+
             await this.stopAllStreams();
             await this.closePC();
         } catch (error) {
@@ -316,7 +349,7 @@ class MiiboAvatar {
     onIceCandidate(event) {
         if (event.candidate) {
             const { candidate, sdpMid, sdpMLineIndex } = event.candidate;
-    
+
             fetch(`https://api.d-id.com/${this.didOptions.service}/streams/${this.streamId}/ice`, {
                 method: 'POST',
                 headers: {
@@ -345,13 +378,13 @@ class MiiboAvatar {
 
     onTrack(event) {
         if (!event.track || !event.streams || event.streams.length === 0) return;
-    
+
         this.statsIntervalId = setInterval(async () => {
             const stats = await this.peerConnection.getStats(event.track);
             stats.forEach((report) => {
                 if (report.type === 'inbound-rtp' && report.mediaType === 'video') {
                     const videoStatusChanged = this.videoIsPlaying !== report.bytesReceived > this.lastBytesReceived;
-    
+
                     if (videoStatusChanged) {
                         this.videoIsPlaying = report.bytesReceived > this.lastBytesReceived;
                         this.onVideoStatusChange(this.videoIsPlaying, event.streams[0]);
@@ -368,11 +401,17 @@ class MiiboAvatar {
             status = 'streaming';
             const remoteStream = stream;
             this.streams.push(remoteStream);
-            this.checkSpeaching();    
+            this.checkSpeaching();
         } else {
             status = 'empty';
+
             this.speaching = false;
-            this.processing = false;
+            if (this.speech_cnt <= 0) {
+                this.speech_cnt = 0;
+                this.processing = false;
+            } else {
+                this.speech_cnt--;
+            }
             this.playIdleVideo();
         }
     }
@@ -383,7 +422,7 @@ class MiiboAvatar {
         } else {
             this.setVideoElement(this.streams.shift());
         }
-    } 
+    }
 
     async createPeerConnection(offer, iceServers) {
         if (!this.peerConnection) {
@@ -392,7 +431,7 @@ class MiiboAvatar {
             this.peerConnection.addEventListener('iceconnectionstatechange', this.onIceConnectionStateChange.bind(this), true);
             this.peerConnection.addEventListener('track', this.onTrack.bind(this), true);
         }
-    
+
         await this.peerConnection.setRemoteDescription(offer);
         const sessionClientAnswer = await this.peerConnection.createAnswer();
         await this.peerConnection.setLocalDescription(sessionClientAnswer);
@@ -404,7 +443,7 @@ class MiiboAvatar {
         if (!stream) return;
         this.videoElement.srcObject = stream;
         this.videoElement.loop = false;
-    
+
         // safari hotfix
         if (this.videoElement.paused) {
             this.videoElement
@@ -413,7 +452,7 @@ class MiiboAvatar {
                 .catch((e) => {});
         }
     }
-    
+
     playIdleVideo() {
         this.videoElement.srcObject = undefined;
         this.videoElement.src = this.didOptions.presenter.idle_movie;
@@ -432,7 +471,7 @@ class MiiboAvatar {
             this.videoElement.srcObject = null;
         }
     }
-    
+
     closePC(pc = this.peerConnection) {
         if (!pc) return;
         pc.close();
